@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>3D Runner Game</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background: #000;
+            font-family: Arial, sans-serif;
+        }
+        canvas {
+            display: block;
+        }
+        #score {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            font-size: 24px;
+            z-index: 100;
+        }
+        #targetColor {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            width: 40px;
+            height: 40px;
+            border: 2px solid white;
+            z-index: 100;
+        }
+        #gameOver {
+            display: none;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0,0,0,0.8);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+            z-index: 100;
+        }
+        #stopOnCollision {
+            position: absolute;
+            bottom: 60px;
+            right: 20px;
+            color: white;
+            z-index: 100;
+        }
+		#controls {
+			position: fixed;
+			bottom: 20px;
+			left: 50%;
+			transform: translateX(-50%);
+			display: flex;
+			gap: 20px;
+			z-index: 100;
+		}
+		.control-btn {
+			width: 60px;
+			height: 60px;
+			background: rgba(255, 255, 255, 0.2);
+			border: 2px solid white;
+			border-radius: 50%;
+			color: white;
+			font-size: 24px;
+			cursor: pointer;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			user-select: none;
+			-webkit-tap-highlight-color: transparent;
+		}
+		.control-btn:active {
+			background: rgba(255, 255, 255, 0.4);
+		}
+    </style>
+</head>
+<body>
+    <div id="score">Score: 0</div>
+    <div id="targetColor"></div>
+    <div id="gameOver">
+        Game Over!<br>
+        Final Score: <span id="finalScore">0</span><br>
+        Click anywhere to restart
+    </div>
+	<div id="controls">
+		<div class="control-btn" id="leftBtn">←</div>
+		<div class="control-btn" id="rightBtn">→</div>
+	</div>
+	<div id="timeControl" style="position: absolute; bottom: 20px; right: 20px; z-index: 100; color: white;">
+		<label for="gameTime">Game Time (seconds): </label>
+        <input type="number" id="gameTime" min="30" max="3540" step="30" value="3540" style="width: 70px;">
+	</div>
+    <div id="stopOnCollision">
+        <input type="checkbox" id="stopOnCollisionCheckbox" checked> <label for="stopOnCollisionCheckbox">Stop on collision</label>
+	</div>	
+	<div id="countdown" style="position: absolute; bottom: 20px; left: 20px; color: white; font-size: 24px; z-index: 100;">
+		Time: 1:00
+	</div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/0.159.0/three.min.js"></script>
+    <script>
+        let camera, scene, renderer, player, road;
+        let score = 0;
+        let isGameOver = false;
+        let obstacles = [];
+        let collectibles = [];
+        let targetColor = new THREE.Color();
+        let playerPosition = 0;
+		const RENDER_DISTANCE = 50;
+		const MOVE_SPEED = 0.2;
+		// Add these new constants:
+		const INITIAL_GAME_SPEED = 0.15;
+		const SPEED_INCREMENT = 0.015;
+		const INITIAL_COLLECTIBLE_SPEED = 0.3;
+		const COLLECTIBLE_SPEED_INCREMENT = 0.03;
+		const OBSTACLE_SPAWN_RATE = 0.015;
+		const COLLECTIBLE_SPAWN_RATE = 0.01;
+		const PYRAMID_COLLISION_PENALTY = 10;
+		const WRONG_COLOR_PENALTY = 5;
+		const SPEED_PENALTY = 0.03;
+		const DEFAULT_GAME_TIME = 60; // in seconds
+		const MIN_GAME_TIME = 30; // in seconds
+		const MAX_GAME_TIME = 600; // in seconds (10 minutes)
+		const LANE_WIDTH = 4; // Space between lanes
+		const NUMBER_OF_LANES = 5;
+		const LANE_POSITIONS = [-8, -4, 0, 4, 8]; // X positions for each lane
+		let currentLane = 2; // Start in middle lane (index 2)
+        let moveDirection = 0;
+		let speed = INITIAL_GAME_SPEED;
+		let collectibleSpeed = INITIAL_COLLECTIBLE_SPEED;
+        let gameTimeElapsed = 0;
+		let gameTimer = null;
+
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87CEEB);
+            
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 3, -5);
+            camera.lookAt(0, 0, 10);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            document.body.appendChild(renderer.domElement);
+
+            scene.fog = new THREE.Fog(0x87CEEB, 1, RENDER_DISTANCE);
+
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambientLight);
+            
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(0, 10, 5);
+            scene.add(directionalLight);
+
+            // Create horizon plane
+            const horizonGeometry = new THREE.PlaneGeometry(200, 50);
+            const horizonMaterial = new THREE.MeshBasicMaterial({ 
+                color: 0x87CEEB,
+                transparent: true,
+                opacity: 0.8
+            });
+            const horizon = new THREE.Mesh(horizonGeometry, horizonMaterial);
+            horizon.position.set(0, 10, RENDER_DISTANCE);
+            horizon.rotation.x = -Math.PI * 0.1;
+            scene.add(horizon);
+
+            // Create road
+			const roadGeometry = new THREE.PlaneGeometry(20, 1000); // Changed from 10 to 20
+            const roadMaterial = new THREE.MeshStandardMaterial({ 
+                color: 0x333333,
+                roughness: 0.8 
+            });
+            road = new THREE.Mesh(roadGeometry, roadMaterial);
+            road.rotation.x = -Math.PI / 2;
+            road.position.z = 500;
+            scene.add(road);
+
+            // Create grass
+            const grassGeometry = new THREE.PlaneGeometry(100, 1000);
+            const grassMaterial = new THREE.MeshStandardMaterial({ color: 0x3d9e41 });
+            
+            const leftGrass = new THREE.Mesh(grassGeometry, grassMaterial);
+			leftGrass.rotation.x = -Math.PI / 2;
+			leftGrass.position.set(-60, -0.1, 500); // Changed from -55
+            scene.add(leftGrass);
+            
+            const rightGrass = new THREE.Mesh(grassGeometry, grassMaterial);
+			rightGrass.rotation.x = -Math.PI / 2;
+			rightGrass.position.set(60, -0.1, 500); // Changed from 55
+            scene.add(rightGrass);
+
+            // Create player
+            player = new THREE.Group();
+            
+            const bodyGeometry = new THREE.BoxGeometry(1, 0.5, 2);
+            const bodyMaterial = new THREE.MeshStandardMaterial({ color: 0xff0000 });
+            const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
+            
+            const roofGeometry = new THREE.BoxGeometry(0.8, 0.4, 0.8);
+            const roof = new THREE.Mesh(roofGeometry, bodyMaterial);
+            roof.position.y = 0.45;
+            roof.position.z = -0.3;
+            
+            const wheelGeometry = new THREE.CylinderGeometry(0.25, 0.25, 0.15, 16);
+            const wheelMaterial = new THREE.MeshStandardMaterial({ color: 0x333333 });
+            
+            const wheelPositions = [
+                [-0.5, -0.25, 0.5],
+                [0.5, -0.25, 0.5],
+                [-0.5, -0.25, -0.5],
+                [0.5, -0.25, -0.5]
+            ];
+            
+            wheelPositions.forEach(pos => {
+                const wheel = new THREE.Mesh(wheelGeometry, wheelMaterial);
+                wheel.rotation.z = Math.PI / 2;
+                wheel.position.set(...pos);
+                player.add(wheel);
+            });
+            
+            player.add(body);
+            player.add(roof);
+            
+            player.position.set(0, 0.5, 0);
+            scene.add(player);
+			// Add touch controls
+			const leftBtn = document.getElementById('leftBtn');
+			const rightBtn = document.getElementById('rightBtn');
+
+			// Handle touch events for left button
+			leftBtn.addEventListener('touchstart', (e) => {
+				e.preventDefault();
+				if (!isGameOver && currentLane < NUMBER_OF_LANES - 1) {
+					currentLane++;
+					playerPosition = LANE_POSITIONS[currentLane];
+				}
+			});
+
+			rightBtn.addEventListener('touchstart', (e) => {
+				e.preventDefault();
+				if (!isGameOver && currentLane > 0) {
+					currentLane--;
+					playerPosition = LANE_POSITIONS[currentLane];
+				}
+			});
+
+			// Handle mouse events for the buttons
+			leftBtn.addEventListener('mousedown', (e) => {
+				e.preventDefault();
+				if (!isGameOver && currentLane < NUMBER_OF_LANES - 1) {
+					currentLane++;
+					playerPosition = LANE_POSITIONS[currentLane];
+				}
+			});
+
+			rightBtn.addEventListener('mousedown', (e) => {
+				e.preventDefault();
+				if (!isGameOver && currentLane > 0) {
+					currentLane--;
+					playerPosition = LANE_POSITIONS[currentLane];
+				}
+			});
+            document.addEventListener('keydown', onKeyDown);
+            document.addEventListener('keyup', onKeyUp);
+            window.addEventListener('resize', onWindowResize, false);
+            renderer.domElement.addEventListener('click', onMouseClick);
+
+            setNewTargetColor();
+			startTimer();
+            animate();
+        }
+
+        function createObstacle() {
+			const pyramidGeometry = new THREE.ConeGeometry(0.8, 1.5, 4);
+			const pyramidMaterial = new THREE.MeshStandardMaterial({ color: 0x666666 });
+			const pyramid = new THREE.Mesh(pyramidGeometry, pyramidMaterial);
+			
+			const randomLane = Math.floor(Math.random() * NUMBER_OF_LANES);
+			pyramid.position.z = RENDER_DISTANCE;
+			pyramid.position.x = LANE_POSITIONS[randomLane];
+			pyramid.position.y = 0.75;
+			pyramid.rotation.y = Math.PI / 4;
+			
+			scene.add(pyramid);
+			obstacles.push(pyramid);
+		}
+
+        function createCollectible() {
+            const colors = [0xff0000, 0x00ff00, 0x0000ff, 0xffff00];
+            const color = colors[Math.floor(Math.random() * colors.length)];
+            
+            const cubeGeometry = new THREE.BoxGeometry(1.5, 1.5, 1.5);
+            const cubeMaterial = new THREE.MeshStandardMaterial({ color: color });
+            const cube = new THREE.Mesh(cubeGeometry, cubeMaterial);
+            
+            cube.position.z = RENDER_DISTANCE;
+            cube.position.x = (Math.random() - 0.5) * 8;
+            cube.position.y = 2 + Math.random() * 2;
+            
+            scene.add(cube);
+            collectibles.push(cube);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            if (!isGameOver) {			
+				const maxTime = parseInt(document.getElementById('gameTime').value);
+				if (gameTimeElapsed >= maxTime) {
+					endGame();
+					return;
+				}
+                if (moveDirection !== 0) {
+                    playerPosition = Math.max(Math.min(playerPosition + (moveDirection * MOVE_SPEED), 4), -4);
+                }
+                player.position.x += (playerPosition - player.position.x) * 0.2;
+                
+                obstacles.forEach(obstacle => {
+                    obstacle.position.z -= speed;
+                    if (obstacle.position.z < -10) {
+                        scene.remove(obstacle);
+                        obstacles = obstacles.filter(obj => obj !== obstacle);
+                    }
+                });
+
+                collectibles.forEach(collectible => {
+                    collectible.position.z -= collectibleSpeed;
+                    if (collectible.position.z < -10) {
+                        scene.remove(collectible);
+                        collectibles = collectibles.filter(obj => obj !== collectible);
+                    }
+                });
+
+				if (Math.random() < OBSTACLE_SPAWN_RATE) createObstacle();
+				if (Math.random() < COLLECTIBLE_SPAWN_RATE) createCollectible();
+
+                obstacles.forEach(obstacle => {
+					if (obstacle.position.z < 1 && obstacle.position.z > -1) {
+						const xDistance = Math.abs(player.position.x - obstacle.position.x);
+						if (xDistance < 1) {							
+                            if (document.getElementById('stopOnCollisionCheckbox').checked) {
+                                endGame();
+                            }
+							score = Math.max(0, score - PYRAMID_COLLISION_PENALTY);
+							document.getElementById('score').textContent = `Score: ${score}`;
+							speed = Math.max(INITIAL_GAME_SPEED, speed - SPEED_PENALTY);
+							scene.remove(obstacle);
+							obstacles = obstacles.filter(obj => obj !== obstacle);
+						}
+					}
+				});
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        
+		function onKeyDown(event) {
+			if (isGameOver) return;
+			if (event.key === 'ArrowLeft' && currentLane < NUMBER_OF_LANES - 1) {
+				currentLane++;
+				playerPosition = LANE_POSITIONS[currentLane];
+			} else if (event.key === 'ArrowRight' && currentLane > 0) {
+				currentLane--;
+				playerPosition = LANE_POSITIONS[currentLane];
+			}
+		}
+
+		// The onKeyUp function can be simplified to:
+		function onKeyUp(event) {
+			// No need for any logic here anymore
+		}
+
+        function onMouseClick(event) {
+            if (isGameOver) {
+                startGame();
+                return;
+            }
+
+            const mouse = new THREE.Vector2(
+                (event.clientX / window.innerWidth) * 2 - 1,
+                -(event.clientY / window.innerHeight) * 2 + 1
+            );
+
+            const raycaster = new THREE.Raycaster();
+            raycaster.setFromCamera(mouse, camera);
+
+			raycaster.params.Points.threshold = 2; // This makes the hit area larger
+            const intersects = raycaster.intersectObjects(collectibles);
+            
+            if (intersects.length > 0) {
+                const clickedObject = intersects[0].object;
+                if (clickedObject.material.color.equals(targetColor)) {
+                    score += 10;
+                    document.getElementById('score').textContent = `Score: ${score}`;
+                    scene.remove(clickedObject);
+                    collectibles = collectibles.filter(obj => obj !== clickedObject);
+                    setNewTargetColor();										
+					// With these:
+					speed += SPEED_INCREMENT;
+					collectibleSpeed += COLLECTIBLE_SPEED_INCREMENT;
+                } else {
+                    if (document.getElementById('stopOnCollisionCheckbox').checked) {
+                        endGame();
+                    }
+					score = Math.max(0, score - WRONG_COLOR_PENALTY);
+					document.getElementById('score').textContent = `Score: ${score}`;
+					speed = Math.max(INITIAL_GAME_SPEED, speed - SPEED_PENALTY);
+					scene.remove(clickedObject);
+					collectibles = collectibles.filter(obj => obj !== clickedObject);
+				}
+            }
+        }
+
+        function setNewTargetColor() {
+            const colors = [0xff0000, 0x00ff00, 0x0000ff, 0xffff00];
+            const newColor = colors[Math.floor(Math.random() * colors.length)];
+            targetColor.setHex(newColor);
+            document.getElementById('targetColor').style.backgroundColor = '#' + newColor.toString(16).padStart(6, '0');
+        }
+
+		function endGame() {
+			isGameOver = true;
+			if (gameTimer) {
+				clearInterval(gameTimer);
+				gameTimer = null;
+			}
+			document.getElementById('finalScore').textContent = score;
+			document.getElementById('gameOver').style.display = 'block';
+		}
+
+        function startGame() {		
+			currentLane = 2; // Reset to middle lane
+			playerPosition = LANE_POSITIONS[currentLane];
+			if (gameTimer) {
+				clearInterval(gameTimer);
+			}
+			gameTimeRemaining = parseInt(document.getElementById('gameTime').value);
+			updateCountdown();
+			startTimer();
+            score = 0;
+			speed = INITIAL_GAME_SPEED;
+			collectibleSpeed = INITIAL_COLLECTIBLE_SPEED;
+            isGameOver = false;
+            playerPosition = 0;
+            moveDirection = 0;
+            document.getElementById('score').textContent = 'Score: 0';
+            document.getElementById('gameOver').style.display = 'none';
+            
+            player.position.x = 0;
+            
+            obstacles.forEach(obstacle => scene.remove(obstacle));
+            collectibles.forEach(collectible => scene.remove(collectible));
+            obstacles = [];
+            collectibles = [];
+            
+            setNewTargetColor();
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+		
+        function formatTime(seconds) {
+            const minutes = Math.floor(seconds / 60);
+            const remainingSeconds = seconds % 60;
+            return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
+        }
+	   
+		function updateCountdown() {
+            const maxTime = parseInt(document.getElementById('gameTime').value);
+            if (gameTimeElapsed >= maxTime) {
+				endGame();
+				return;
+			}
+			// const minutes = Math.floor(gameTimeRemaining / 60);
+			// const seconds = gameTimeRemaining % 60;
+			// document.getElementById('countdown').textContent = 
+			// 	`Time: ${minutes}:${seconds.toString().padStart(2, '0')}`;
+			document.getElementById('countdown').textContent = `Time: ${formatTime(gameTimeElapsed)}`;
+
+		}
+
+		function startTimer() {
+			// gameTimeRemaining = parseInt(document.getElementById('gameTime').value);
+			gameTimeElapsed++;
+			updateCountdown();
+			if (gameTimer) clearInterval(gameTimer);
+			gameTimer = setInterval(() => {
+				//gameTimeRemaining--;
+				gameTimeElapsed++;
+				updateCountdown();
+			}, 1000);
+		}
+
+        window.addEventListener('load', init);
+    </script>
+</body>
+</html>
